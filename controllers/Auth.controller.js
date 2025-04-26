@@ -4,6 +4,8 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 // const { passwordUpdated } = require("../mail/templates/passwordUpdate");
 // const mailSender = require("../utils/mailServer");
+const redisClient = require("../redis"); // adjust the path as needed
+
 require("dotenv").config();
 exports.createUser = async (req, res) => {
   try {
@@ -110,10 +112,95 @@ exports.createUser = async (req, res) => {
   }
 };
 
+// exports.login = async (req, res) => {
+//   try {
+//     const { email, password } = req.body;
+//     // Validate email and password
+//     if (!email || !password) {
+//       return res.status(400).json({
+//         success: false,
+//         message: "Please fill all fields",
+//       });
+//     }
+//     // Try getting cached user from redis
+//     let cachedUser = await redisClient.get(email);
+//     let user;
+//     if (cachedUser) {
+//       user = JSON.parse(cachedUser);
+//       console.log("cached user here", cachedUser);
+//     } else {
+//       // Check if user exists
+//       const user = await User.findOne({ email }).exec();
+//       if (!user) {
+//         return res.status(400).json({
+//           success: false,
+//           message: "User doesn't exist",
+//         });
+//       }
+//       //Update redis with the email given
+//       await redisClient.set(email, JSON.stringify(user), {
+//         EX: 3600, //expires in an hour 60min *60sec
+//       });
+//     }
+
+//     // Verify password
+//     const isPasswordValid = await bcrypt.compare(password, user?.password);
+//     if (!isPasswordValid) {
+//       return res.status(401).json({
+//         success: false,
+//         message: "Incorrect Password",
+//       });
+//     }
+
+//     // Generate JWT token
+//     const payload = {
+//       id: user._id,
+//       email: user.email,
+//       role: user.role,
+//     };
+
+//     const token = jwt.sign(payload, process.env.JWT_SECRET_KEY, {
+//       expiresIn: "48h",
+//     });
+
+//     // Update lastLogin and save
+//     user.lastLogin = new Date(); // Store current date and time
+//     user.token = token;
+
+//     await user?.save(); // Important: This ensures lastLogin is saved in the DB
+//     //Update redis with the email given
+//     await redisClient.set(email, JSON.stringify(user), {
+//       EX: 3600, //expires in an hour 60min *60sec
+//     });
+//     // Hide sensitive info
+//     user.password = undefined;
+//     user.confirmpassword = undefined;
+
+//     // Set cookie for token and return success response
+//     const options = {
+//       expires: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000), // 3 days
+//       httpOnly: true,
+//     };
+
+//     res.cookie("imranCookie", token, options).status(200).json({
+//       success: true,
+//       token,
+//       user,
+//       message: "User Logged In Successfully",
+//     });
+//   } catch (e) {
+//     console.error(e);
+//     return res.status(500).json({
+//       success: false,
+//       message: "Login Failure. Please Try Again.",
+//       error: e.message,
+//     });
+//   }
+// };
+
 exports.login = async (req, res) => {
   try {
     const { email, password } = req.body;
-    console.log("email password", email, password);
     // Validate email and password
     if (!email || !password) {
       return res.status(400).json({
@@ -122,14 +209,33 @@ exports.login = async (req, res) => {
       });
     }
 
-    // Check if user exists
-    const user = await User.findOne({ email }).exec();
-    console.log("this is user", user);
-    if (!user) {
-      return res.status(400).json({
-        success: false,
-        message: "User doesn't exist",
+    let user;
+
+    // Try getting cached user from Redis
+    let cachedUser = await redisClient.get(email);
+
+    if (cachedUser) {
+      // User found in Redis
+      user = JSON.parse(cachedUser);
+      console.log("User found in Redis cache:", user);
+
+      // Rehydrate the user object to a Mongoose document
+      user = User.hydrate(user); // Converts plain object into Mongoose document
+    } else {
+      // User not found in Redis, fetch from MongoDB
+      user = await User.findOne({ email }).exec();
+      if (!user) {
+        return res.status(400).json({
+          success: false,
+          message: "User doesn't exist",
+        });
+      }
+
+      // Cache the user in Redis for future requests
+      await redisClient.set(email, JSON.stringify(user), {
+        EX: 3600, // Cache expires in 1 hour
       });
+      console.log("User cached in Redis:", user);
     }
 
     // Verify password
@@ -152,11 +258,19 @@ exports.login = async (req, res) => {
       expiresIn: "48h",
     });
 
-    // Update lastLogin and save
+    // Update lastLogin and save in MongoDB
     user.lastLogin = new Date(); // Store current date and time
-    user.token = token;
+    user.token = token; // Store the token
 
-    await user.save(); // Important: This ensures lastLogin is saved in the DB
+    // Save the updated user to MongoDB
+    await user.save();
+    console.log("User data saved to MongoDB:", user);
+
+    // Update Redis cache with the new data (lastLogin and token)
+    await redisClient.set(email, JSON.stringify(user), {
+      EX: 3600, // Cache expires in 1 hour
+    });
+    console.log("User data updated in Redis cache:", user);
 
     // Hide sensitive info
     user.password = undefined;

@@ -4,7 +4,8 @@ const cookieParser = require("cookie-parser");
 const app = express();
 require("dotenv").config();
 const port = process.env.PORT || 3001;
-
+const mongoSanitize = require("express-mongo-sanitize");
+const xssClean = require("xss-clean");
 //Importing Routes
 const userRoutes = require("./routes/User.routes");
 const deedRoutes = require("./routes/Deeds.routes");
@@ -23,6 +24,12 @@ app.use(
   })
 );
 
+//Data sanitization for NoSql query injection
+app.use(mongoSanitize());
+
+//Data sanitization against Cross site scripting
+app.use(xssClean())
+
 //Appending or mounting api's
 const mountApis = [
   { path: "/api/v1/auth", element: userRoutes },
@@ -31,7 +38,6 @@ const mountApis = [
 mountApis.forEach((api) => {
   app.use(api.path, api.element);
 });
-
 
 //Starting Server
 app.listen(port, () => console.log(`App Started at port  ${port}`));
